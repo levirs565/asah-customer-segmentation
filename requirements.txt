@@ -1,0 +1,7 @@
+numpy==2.3.4
+streamlit==1.52.1
+pandas==2.3.3
+plotly==6.5.0
+joblib==1.5.2
+psycopg2-binary==2.9.11
+scipy==1.16.2
