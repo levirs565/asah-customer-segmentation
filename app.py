@@ -182,9 +182,11 @@ def main():
         "Data Drift Detection"
     ])
 
+    st.dataframe(read_csv_cached("snake.csv"))
+
     data = get_all_rfm(conn, True)
     data_new = get_all_rfm(conn, False)
-    
+
     customer_count = get_customer_count(conn)
     transaction_len = get_transaction_count(conn)
 
