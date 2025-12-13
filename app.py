@@ -1,10 +1,12 @@
 import streamlit as st 
+import numpy as np
 import pandas as pd 
 import plotly.express as px 
 import plotly.graph_objects as go 
 from sklearn.preprocessing import PowerTransformer
 import joblib 
-import sqlite3
+import psycopg2
+from psycopg2.extensions import connection
 from scipy.stats import ks_2samp
 import datetime
 
@@ -13,29 +15,76 @@ st.set_page_config(
     layout="wide"
 ) 
 
-def init_db():
-    conn = sqlite3.connect('transaction.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS new_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_id TEXT,
-            transaction_date DATE,
-            amount REAL
-        )
-    ''')
-    conn.commit()
+
+def get_db():
+    conn = psycopg2.connect("dbname=asah user=postgres password=root")
     return conn 
 
 def add_transaction(conn, cust_id, amount):
     c = conn.cursor()
     date_now = datetime.date.today()
-    c.execute('INSERT INTO new_transactions (customer_id, transaction_date, amount) VALUES (?, ?, ?)', 
+    c.execute('INSERT INTO transaction (customer_id, created_at, amount) VALUES (%s, %s, %s)', 
               (cust_id, date_now, amount)) 
     conn.commit() 
 
+def get_transaction_count(conn: connection):
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM transaction WHERE created_at >= TIMESTAMP '2025-12-10'")
+    return c.fetchone()[0]
+
+def get_customer_count(conn: connection):
+    c = conn.cursor()
+    c.execute("SELECT COUNT(DISTINCT customer_id) FROM transaction")
+    return c.fetchone()[0]
+
+def get_all_rfm(conn: connection, training: bool):
+    reference_date = datetime.date.today() if not training else datetime.datetime(2025, 12, 9, 12, 50)
+    return pd.read_sql(
+        """
+        SELECT
+            customer_id,
+            EXTRACT(DAY FROM %s - MAX(created_at)) AS recency_days,
+            COUNT(*) AS frequency,
+            SUM(amount) AS monetary
+        FROM transaction
+        WHERE created_at < %s
+        GROUP BY customer_id
+        """,
+        conn,
+        params=(reference_date,reference_date)
+    )
+
+def get_customer_rfm(conn: connection, cust_id):
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT
+            customer_id,
+            (CURRENT_DATE - MAX(created_at)::date) AS recency_days,
+            COUNT(*) AS frequency,
+            SUM(amount) AS monetary
+        FROM transaction
+        WHERE customer_id = %s
+        GROUP BY customer_id
+        """,
+        (cust_id,)
+    )
+    result = c.fetchmany(1)
+    if len(result) == 0:
+        return None
+    return {
+        "r": result[0][1],
+        "f": result[0][2],
+        "m": result[0][3]
+    }
+
+def get_cluster(scaler, model, r, f, m):
+    rfm = [[r, f, m]]
+    rfm_scaled = scaler.transform(rfm)
+    return model.predict(rfm_scaled)[0] 
+
 def get_transactions(conn):
-    return pd.read_sql('SELECT * FROM new_transactions', conn)
+    return pd.read_sql('SELECT * FROM transaction', conn)
 
 @st.cache_data
 def load():
@@ -71,15 +120,58 @@ def cek_drift(data, curr_data, col):
 def main():
     st.title("Customer Segmentation: K-Means & RFM")
 
-    conn = init_db()
+    conn = get_db()
     data, model, scalar = load()
+
+    cek = False
+    if cek:
+        p_rfm = get_all_rfm(conn, True)
+
+        d_1 = data[["Customer ID", "Recency", "Frequency", "Monetary"]].sort_values("Customer ID")
+        d_2= p_rfm[["customer_id", "recency_days", "frequency", "monetary"]].rename(columns={
+            "customer_id": "Customer ID",
+            "recency_days": "Recency",
+            "frequency": "Frequency",
+            "monetary": "Monetary"
+        }).sort_values("Customer ID").reset_index(drop=True)
+
+        d_1["Customer ID"] = d_1["Customer ID"].astype(int)
+        d_2["Customer ID"] = d_2["Customer ID"].astype(int)
+
+        diff = abs(d_1 - d_2) > 0.0000001
+        if diff.any().any():
+            row, col = diff.stack().idxmax()
+            st.write("Baris:", row)
+            st.write("Kolom:", col)
+            st.write("d_1:", d_1.loc[row, col])
+            st.write("d_2:", d_2.loc[row, col])
+        else:
+            st.write("Semua sesuai")
+
+        st.dataframe(p_rfm)
+
+        salah_cnt = 0
+        for customer in p_rfm["customer_id"].unique():
+            x = p_rfm[p_rfm["customer_id"] == customer]
+            r = x["recency_days"].iloc[0]
+            f = x["frequency"].iloc[0]
+            m = x["monetary"].iloc[0]
+
+            cluster = get_cluster(scalar, model, r, f, m)
+            expected = data[data["Customer ID"] == customer]["Cluster"].iloc[0]
+
+            if cluster != expected:
+                st.write("Custmer ID", customer)
+                st.write("Cluster", cluster)
+                st.write("Expected", expected)
+                salah_cnt += 1
+
+        st.write("Salah", salah_cnt)
 
     if model is None:
         st.error("Model belum ditemukan")
         return
     
-    data_new = get_transactions(conn) 
-    curr_data = data.copy() 
     tab1, tab2, tab3, tab4 = st.tabs([
         "Dashboard", 
         "Profil Customer",
@@ -87,30 +179,35 @@ def main():
         "Data Drift Detection"
     ])
 
+    customer_count = get_customer_count(conn)
+    transaction_len = get_transaction_count(conn)
+
     with tab1:
         st.info("Menampilkan data gabungan historis + transaksi baru")
-        st.metric("Total Customer Base", len(data))
-        st.metric("Transaksi Baru (SQLite)", len(data_new)) 
+        st.metric("Total Customer Base", customer_count)
+        st.metric("Transaksi Baru (SQLite)", transaction_len) 
     with tab2:
         st.header("Cari Profil Customer")
         search_id = st.text_input("Customer ID")
         if st.button("Cari") or search_id:
-            cust_data = curr_data[curr_data['Customer ID'] == search_id]
-            if not cust_data.empty:
-                cust = cust_data.iloc[0]
-                cluster_id = cust['Cluster']
+            cluster = 0, 0, 0, 0
+            rfm = get_customer_rfm(conn, search_id)
+
+            if rfm is not None:
+                r, f, m = rfm["r"], rfm["f"], rfm["m"]
+                cluster = get_cluster(scalar, model, r, f, m)
 
                 st.success(f"Customer ID **{search_id}**")
-                st.markdown(f"### Termasuk dalam Cluster: {cluster_id}")
+                st.markdown(f"### Termasuk dalam Cluster: {cluster}")
 
                 m1, m2, m3 = st.columns(3) 
 
-                m1.metric("Recency ", int(cust['Recency']))
-                m2.metric("Frequency ", int(cust['Frequency']))
-                m3.metric("Monetary ", f"{cust['Monetary']:,.2f}")
+                m1.metric("Recency ", int(r))
+                m2.metric("Frequency ", int(f))
+                m3.metric("Monetary ", f"{m}")
                 st.divider() 
                 st.subheader("Rekomendasi Bisnis")
-                rekomendasi = get_recommendation(int(cluster_id))
+                rekomendasi = get_recommendation(int(cluster))
                 st.info(rekomendasi) 
         else:
             st.warning("Tidak ditemukan") 
@@ -158,7 +255,8 @@ def main():
                 st.error("ID dan Total Belanja harus diisi") 
     with tab4:
         st.header("Cek Data Drift")
-        
+        data = 
+        data_new = get_all_rfm(conn, True)
         if not data_new.empty:
             new_agg = data_new.groupby('customer_id')['amount'].sum().reset_index()
             monitoring = data.copy() 
