@@ -136,12 +136,8 @@ def read_csv_cached(name):
 
 @st.cache_data
 def load():
-    try:
-        model = joblib.load(DATA_DIR / 'model.pkl')
-        scaler = joblib.load(DATA_DIR / 'scaler.pkl')
-    except:
-        model = None 
-        scaler = None
+    model = joblib.load(DATA_DIR / 'model.pkl')
+    scaler = joblib.load(DATA_DIR / 'scaler.pkl')
     return model, scaler 
 
 
