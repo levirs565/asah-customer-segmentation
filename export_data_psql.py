@@ -3,7 +3,7 @@ import psycopg2
 import psycopg2.extras
 import os
 
-df = pd.read_csv("cleaned_data.csv")
+df = pd.read_csv("data/cleaned_data.csv")
 df['Customer ID'] = df['Customer ID'].astype(float).astype(int).astype(str) 
 df['InvoiceDate'] = pd.to_datetime(df['InvoiceDate'])
 df["TotalPrice"] = df["Quantity"] * df["Price"]
