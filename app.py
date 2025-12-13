@@ -9,6 +9,10 @@ from psycopg2.extensions import connection
 from scipy.stats import ks_2samp
 import datetime
 import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
 
 st.set_page_config(
     page_title="Customer Segmentation Online Retail", 
@@ -92,7 +96,7 @@ def get_transactions(conn):
     return pd.read_sql('SELECT * FROM transaction', conn)
 
 def show_parameter_bar(name):
-    df = read_csv_cached(f"data/bar_{name}.csv")
+    df = read_csv_cached(f"bar_{name}.csv")
     df["Cluster"] = df["Cluster"].map(cluster_names)
 
     fig = go.Figure()
@@ -128,13 +132,13 @@ def show_parameter_bar(name):
 
 @st.cache_data
 def read_csv_cached(name):
-    return pd.read_csv(name)
+    return pd.read_csv(DATA_DIR / name)
 
 @st.cache_data
 def load():
     try:
-        model = joblib.load('data/model.pkl')
-        scaler = joblib.load('data/scaler.pkl')
+        model = joblib.load(DATA_DIR / 'model.pkl')
+        scaler = joblib.load(DATA_DIR / 'scaler.pkl')
     except:
         model = None 
         scaler = None
@@ -203,7 +207,7 @@ def main():
         )
         c1.plotly_chart(fig)
 
-        df_snake = read_csv_cached("data/snake.csv")
+        df_snake = read_csv_cached("snake.csv")
         df_snake["Cluster"] =  df_snake["Cluster"].map(cluster_names)
         df_snake_long = df_snake.melt(
             id_vars="Cluster",
