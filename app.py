@@ -38,12 +38,12 @@ def get_customer_count(conn: connection):
     return c.fetchone()[0]
 
 def get_all_rfm(conn: connection, training: bool):
-    reference_date = datetime.date.today() if not training else datetime.datetime(2025, 12, 9, 12, 50)
+    reference_date = (datetime.date.today() + datetime.timedelta(days=1)) if not training else datetime.datetime(2025, 12, 9, 12, 50)
     return pd.read_sql(
         """
         SELECT
             customer_id,
-            EXTRACT(DAY FROM %s - MAX(created_at)) AS recency_days,
+            EXTRACT(DAY FROM %s - MAX(created_at)) AS recency,
             COUNT(*) AS frequency,
             SUM(amount) AS monetary
         FROM transaction
@@ -52,7 +52,11 @@ def get_all_rfm(conn: connection, training: bool):
         """,
         conn,
         params=(reference_date,reference_date)
-    )
+    ).rename(columns={
+        "recency": "Recency",
+        "frequency": "Frequency",
+        "monetary": "Monetary"
+    })
 
 def get_customer_rfm(conn: connection, cust_id):
     c = conn.cursor()
@@ -88,16 +92,13 @@ def get_transactions(conn):
 
 @st.cache_data
 def load():
-    data = pd.read_csv("clusterd.csv")
-    if 'Customer ID' in data.columns:
-        data['Customer ID'] = data['Customer ID'].astype(float).astype(int).astype(str)  
     try:
         model = joblib.load('model.pkl')
         scaler = joblib.load('scaler.pkl')
     except:
         model = None 
         scaler = None
-    return data, model, scaler 
+    return model, scaler 
 
 
 def get_recommendation(cluster):
@@ -121,57 +122,8 @@ def main():
     st.title("Customer Segmentation: K-Means & RFM")
 
     conn = get_db()
-    data, model, scalar = load()
+    model, scalar = load()
 
-    cek = False
-    if cek:
-        p_rfm = get_all_rfm(conn, True)
-
-        d_1 = data[["Customer ID", "Recency", "Frequency", "Monetary"]].sort_values("Customer ID")
-        d_2= p_rfm[["customer_id", "recency_days", "frequency", "monetary"]].rename(columns={
-            "customer_id": "Customer ID",
-            "recency_days": "Recency",
-            "frequency": "Frequency",
-            "monetary": "Monetary"
-        }).sort_values("Customer ID").reset_index(drop=True)
-
-        d_1["Customer ID"] = d_1["Customer ID"].astype(int)
-        d_2["Customer ID"] = d_2["Customer ID"].astype(int)
-
-        diff = abs(d_1 - d_2) > 0.0000001
-        if diff.any().any():
-            row, col = diff.stack().idxmax()
-            st.write("Baris:", row)
-            st.write("Kolom:", col)
-            st.write("d_1:", d_1.loc[row, col])
-            st.write("d_2:", d_2.loc[row, col])
-        else:
-            st.write("Semua sesuai")
-
-        st.dataframe(p_rfm)
-
-        salah_cnt = 0
-        for customer in p_rfm["customer_id"].unique():
-            x = p_rfm[p_rfm["customer_id"] == customer]
-            r = x["recency_days"].iloc[0]
-            f = x["frequency"].iloc[0]
-            m = x["monetary"].iloc[0]
-
-            cluster = get_cluster(scalar, model, r, f, m)
-            expected = data[data["Customer ID"] == customer]["Cluster"].iloc[0]
-
-            if cluster != expected:
-                st.write("Custmer ID", customer)
-                st.write("Cluster", cluster)
-                st.write("Expected", expected)
-                salah_cnt += 1
-
-        st.write("Salah", salah_cnt)
-
-    if model is None:
-        st.error("Model belum ditemukan")
-        return
-    
     tab1, tab2, tab3, tab4 = st.tabs([
         "Dashboard", 
         "Profil Customer",
@@ -255,30 +207,19 @@ def main():
                 st.error("ID dan Total Belanja harus diisi") 
     with tab4:
         st.header("Cek Data Drift")
-        data = 
-        data_new = get_all_rfm(conn, True)
-        if not data_new.empty:
-            new_agg = data_new.groupby('customer_id')['amount'].sum().reset_index()
-            monitoring = data.copy() 
-            for index, row in new_agg.iterrows():
-                i = monitoring[monitoring['Customer ID'] == row['customer_id']].index 
-                if not i.empty:
-                    monitoring.loc[i, 'Monetary'] += row['amount']
-                    monitoring.loc[i, 'Frequency'] += 1 
-                    monitoring.loc[i, 'Recency'] = 0 
-        else:
-            monitoring = data.copy() 
+        data = get_all_rfm(conn, True)
+        data_new = get_all_rfm(conn, False)
         
         cols = ['Recency', 'Frequency', 'Monetary']
         for col in cols:
             st.subheader(f"Pemeriksaan Variabel: {col}")
-            drift_detected, p_val = cek_drift(data, monitoring, col)
+            drift_detected, p_val = cek_drift(data, data_new, col)
             c1, c2, c3 = st.columns(3)
             c1.metric("P-Value (KS-Test)", f"{p_val:.4f}")
             c2.metric("Status Drift", "Terdeteksi" if drift_detected else "Aman", delta_color="inverse" if drift_detected else "normal") 
 
             fig = px.histogram(data, x=col, color_discrete_sequence=['blue'], opacity=0.5, labels={'x': 'Nilai'})
-            fig.add_trace(px.histogram(monitoring, x=col, color_discrete_sequence=['red'], opacity=0.5)._data[0])
+            fig.add_trace(px.histogram(data_new, x=col, color_discrete_sequence=['red'], opacity=0.5)._data[0])
             fig.update_layout(barmode='overlay', title=f"Distribusi Lama (Biru) Vs Distribusi Baru (Red)")
             st.plotly_chart(fig, use_container_width=True)
 
