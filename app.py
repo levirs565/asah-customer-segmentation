@@ -252,7 +252,7 @@ def main():
                 cluster = get_cluster(scalar, model, r, f, m)
 
                 st.success(f"Customer ID **{search_id}**")
-                st.markdown(f"### Termasuk dalam Cluster: {cluster}")
+                st.markdown(f"### Termasuk dalam Cluster: {cluster_names[cluster]}")
 
                 m1, m2, m3 = st.columns(3) 
 
