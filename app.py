@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd 
 import plotly.express as px 
 import plotly.graph_objects as go 
-from sklearn.preprocessing import PowerTransformer
 import joblib 
 import psycopg2
 from psycopg2.extensions import connection
