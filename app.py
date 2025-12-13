@@ -15,7 +15,6 @@ st.set_page_config(
     layout="wide"
 ) 
 
-
 def get_db():
     conn = psycopg2.connect("dbname=asah user=postgres password=root")
     return conn 
@@ -82,34 +81,82 @@ def get_customer_rfm(conn: connection, cust_id):
         "m": result[0][3]
     }
 
-def get_cluster(scaler, model, r, f, m):
-    rfm = [[r, f, m]]
+def get_cluster_all(scaler, model, rfm):
     rfm_scaled = scaler.transform(rfm)
-    return model.predict(rfm_scaled)[0] 
+    return model.predict(rfm_scaled)
+
+def get_cluster(scaler, model, r, f, m):
+    return get_cluster_all(scaler, model, [[r, f, m]])[0] 
 
 def get_transactions(conn):
     return pd.read_sql('SELECT * FROM transaction', conn)
 
+def show_parameter_bar(name):
+    df = read_csv_cached(f"data/bar_{name}.csv")
+    df["Cluster"] = df["Cluster"].map(cluster_names)
+
+    fig = go.Figure()
+
+    fig.add_bar(
+        x=df["Cluster"],
+        y=df["Min"],
+        name="Min"
+    )
+
+    fig.add_bar(
+        x=df["Cluster"],
+        y=df["Mean"],
+        name="Mean"
+    )
+
+    fig.add_bar(
+        x=df["Cluster"],
+        y=df["Max"],
+        name="Max"
+    )
+
+    fig.update_layout(
+        barmode="stack",
+        title=name,
+        xaxis_title="Cluster",
+        yaxis_title="Value",
+        legend_title="Metric",
+        template="plotly_white"
+    )
+
+    st.plotly_chart(fig)
+
+@st.cache_data
+def read_csv_cached(name):
+    return pd.read_csv(name)
+
 @st.cache_data
 def load():
     try:
-        model = joblib.load('model.pkl')
-        scaler = joblib.load('scaler.pkl')
+        model = joblib.load('data/model.pkl')
+        scaler = joblib.load('data/scaler.pkl')
     except:
         model = None 
         scaler = None
     return model, scaler 
 
 
+cluster_names = {
+    0: "Low Value",
+    1: "At Risk",
+    2: "New Potential",
+    3: "Champions"
+}
+
 def get_recommendation(cluster):
     recommendations = {
-        0: "**Lost / Low Value (Stop Budget):** Pelanggan ini sudah lama pergi & nilai transaksinya kecil. Jangan habiskan biaya iklan di sini. Cukup kirim email otomatis atau survei kepuasan.",
+        0: "**Low Value (Effiency):** Pelanggan ini sudah lama pergi & nilai transaksinya kecil. Jangan habiskan biaya iklan di sini. Cukup kirim email otomatis atau survei kepuasan.",
         
-        1: "**At Risk / Hibernating (Win-Back):** Pelanggan lama yang mulai menghilang. Segera kirim kampanye 'Kami Rindu Anda' dengan diskon waktu terbatas (misal: valid 24 jam) untuk memancing transaksi.",
+        1: "**At Risk (Win-Back):** Pelanggan lama yang mulai menghilang. Segera kirim kampanye 'Kami Rindu Anda' dengan diskon waktu terbatas (misal: valid 24 jam) untuk memancing transaksi.",
         
         2: "**New Potential (Onboarding):** Pelanggan baru (Recency bagus), tapi belum sering belanja. Fokus edukasi produk, tawarkan barang pelengkap (Cross-sell), dan beri insentif untuk pembelian ke-2.",
         
-        3: "**Champions / VIP (Retention):** Pelanggan Sultan! Berikan layanan prioritas (VIP Access) & Reward Points. Jangan spam diskon murahan, tapi berikan apresiasi eksklusif agar tidak pindah ke kompetitor."
+        3: "**Champions:** Pelanggan Sultan! Berikan layanan prioritas (VIP Access) & Reward Points. Jangan spam diskon murahan, tapi berikan apresiasi eksklusif agar tidak pindah ke kompetitor."
     }
     return recommendations.get(cluster, "Lakukan analisa lebih lanjut")
 
@@ -131,13 +178,68 @@ def main():
         "Data Drift Detection"
     ])
 
+    data = get_all_rfm(conn, True)
+    data_new = get_all_rfm(conn, False)
+    
     customer_count = get_customer_count(conn)
     transaction_len = get_transaction_count(conn)
 
     with tab1:
         st.info("Menampilkan data gabungan historis + transaksi baru")
         st.metric("Total Customer Base", customer_count)
-        st.metric("Transaksi Baru (SQLite)", transaction_len) 
+        st.metric("Transaksi Baru (Setelah Training)", transaction_len) 
+
+        data_rfm = data_new[["Recency", "Frequency", "Monetary"]].to_numpy()
+        data_clusters = get_cluster_all(scalar, model, data_rfm)
+
+        c1, c2 = st.columns(2)
+
+        _, counts = np.unique(data_clusters, return_counts=True)
+
+        fig = px.pie(
+            names=cluster_names,
+            values=counts,
+            title="Jumlah Customer per Cluster"
+        )
+        c1.plotly_chart(fig)
+
+        df_snake = read_csv_cached("data/snake.csv")
+        df_snake["Cluster"] =  df_snake["Cluster"].map(cluster_names)
+        df_snake_long = df_snake.melt(
+            id_vars="Cluster",
+            value_vars=["Recency", "Frequency", "Monetary"],
+            var_name="Metric",
+            value_name="Value"
+        )
+
+        fig = px.line(
+            df_snake_long,
+            x="Metric",
+            y="Value",
+            color="Cluster",
+            markers=True,
+            title="RFM Snake Plot per Cluster"
+        )
+
+        fig.update_layout(
+            xaxis_title="Metric",
+            yaxis_title="Value",
+            legend_title="Cluster"
+        )
+
+        c2.plotly_chart(fig)
+
+        st.subheader("Analisis RFM")
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            show_parameter_bar("Recency")
+        with c2:
+            show_parameter_bar("Frequency")
+        with c3:
+            show_parameter_bar("Monetary")
+    
     with tab2:
         st.header("Cari Profil Customer")
         search_id = st.text_input("Customer ID")
@@ -207,8 +309,6 @@ def main():
                 st.error("ID dan Total Belanja harus diisi") 
     with tab4:
         st.header("Cek Data Drift")
-        data = get_all_rfm(conn, True)
-        data_new = get_all_rfm(conn, False)
         
         cols = ['Recency', 'Frequency', 'Monetary']
         for col in cols:
