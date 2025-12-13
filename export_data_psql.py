@@ -1,6 +1,7 @@
 import pandas as pd
 import psycopg2
 import psycopg2.extras
+import os
 
 df = pd.read_csv("cleaned_data.csv")
 df['Customer ID'] = df['Customer ID'].astype(float).astype(int).astype(str) 
@@ -26,7 +27,7 @@ delta_days = round(YEARS * DAYS_PER_YEAR)
 
 df_grouped["InvoiceDate"] = df_grouped['InvoiceDate'] + pd.Timedelta(days=delta_days)
 
-conn = psycopg2.connect("dbname=asah user=postgres password=root")
+conn = psycopg2.connect(os.getenv("DATABASE_URL"))
 
 c = conn.cursor()
 psycopg2.extras.execute_values(

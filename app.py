@@ -9,6 +9,7 @@ import psycopg2
 from psycopg2.extensions import connection
 from scipy.stats import ks_2samp
 import datetime
+import os
 
 st.set_page_config(
     page_title="Customer Segmentation Online Retail", 
@@ -16,7 +17,7 @@ st.set_page_config(
 ) 
 
 def get_db():
-    conn = psycopg2.connect("dbname=asah user=postgres password=root")
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     return conn 
 
 def add_transaction(conn, cust_id, amount):
