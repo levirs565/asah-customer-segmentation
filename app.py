@@ -25,7 +25,7 @@ def get_db():
 
 def add_transaction(conn, cust_id, amount):
     c = conn.cursor()
-    date_now = datetime.date.today()
+    date_now = datetime.datetime.now()
     c.execute('INSERT INTO transaction (customer_id, created_at, amount) VALUES (%s, %s, %s)', 
               (cust_id, date_now, amount)) 
     conn.commit() 
@@ -41,7 +41,7 @@ def get_customer_count(conn: connection):
     return c.fetchone()[0]
 
 def get_all_rfm(conn: connection, training: bool):
-    reference_date = (datetime.date.today() + datetime.timedelta(days=1)) if not training else datetime.datetime(2025, 12, 9, 12, 50)
+    reference_date = (datetime.datetime.now() + datetime.timedelta(days=1)) if not training else datetime.datetime(2025, 12, 9, 12, 50)
     return pd.read_sql(
         """
         SELECT
@@ -50,11 +50,12 @@ def get_all_rfm(conn: connection, training: bool):
             COUNT(*) AS frequency,
             SUM(amount) AS monetary
         FROM transaction
-        WHERE created_at < %s
+        WHERE created_at < %s AND
+              EXTRACT(DAY FROM %s - created_at) <= 739
         GROUP BY customer_id
         """,
         conn,
-        params=(reference_date,reference_date)
+        params=(reference_date,reference_date,reference_date)
     ).rename(columns={
         "recency": "Recency",
         "frequency": "Frequency",
@@ -67,11 +68,12 @@ def get_customer_rfm(conn: connection, cust_id):
         """
         SELECT
             customer_id,
-            (CURRENT_DATE - MAX(created_at)::date) AS recency_days,
+            EXTRACT(DAY FROM LOCALTIMESTAMP - MAX(created_at)) AS recency_days,
             COUNT(*) AS frequency,
             SUM(amount) AS monetary
         FROM transaction
-        WHERE customer_id = %s
+        WHERE customer_id = %s AND
+              EXTRACT(DAY FROM LOCALTIMESTAMP - created_at) <= 739
         GROUP BY customer_id
         """,
         (cust_id,)
@@ -194,11 +196,14 @@ def main():
 
         c1, c2 = st.columns(2)
 
-        _, counts = np.unique(data_clusters, return_counts=True)
+        values, counts = np.unique(data_clusters, return_counts=True)
+
+        full_counts = np.zeros(4, dtype=int)
+        full_counts[values] = counts
 
         fig = px.pie(
             names=cluster_names,
-            values=counts,
+            values=full_counts,
             title="Jumlah Customer per Cluster"
         )
         c1.plotly_chart(fig)
@@ -256,7 +261,7 @@ def main():
 
                 m1, m2, m3 = st.columns(3) 
 
-                m1.metric("Recency ", int(r))
+                m1.metric("Recency ", int(r), "Hari yang Lalu", "off", delta_arrow="off")
                 m2.metric("Frequency ", int(f))
                 m3.metric("Monetary ", f"{m}")
                 st.divider() 
@@ -277,34 +282,14 @@ def main():
             if input_cust_id and input_amount > 0:
                 add_transaction(conn, input_cust_id, input_amount)
                 st.success("Data berhasil disimpan")
-                cust_data = data[data['Customer ID'] == input_cust_id]
+                
+                rfm = get_customer_rfm(conn, input_cust_id)
+                cluster = get_cluster(scalar, model, rfm["r"], rfm["f"], rfm["m"])
 
-                if not cust_data.empty:
-                    freq_prev = cust_data.iloc[0]['Frequency']
-                    mon_prev = cust_data.iloc[0]['Monetary'] 
-                    recency_new = 0 
-                    freq_new = freq_prev + 1 
-                    mon_new = mon_prev + input_amount 
-                    rfm_new = [[recency_new, freq_new, mon_new]]
-                    rfm_new_scaled = scalar.transform(rfm_new)
-                    new_cluster = model.predict(rfm_new_scaled)[0] 
+                st.divider()
 
-                    st.divider()
-                    colres1, colres2 = st.columns(2)
-                    with colres1:
-                        st.markdown("Perubahan Status")
-                        st.write(f"Cluster Lama: {cust_data.iloc[0]['Cluster']}")
-                        st.write(f"Cluster Baru: {new_cluster}") 
-
-                        if cust_data.iloc[0]['Cluster'] != new_cluster:
-                            st.success("Customer berpindah segmen")
-                        else:
-                            st.info("Segmen masih sama") 
-                    with colres2:
-                        st.markdown("Rekomendasi Baru")
-                        st.warning(get_recommendation(new_cluster))
-                else:
-                    st.warning("Customer ID ini adalaha Customer Baru")
+                st.markdown("Rekomendasi")
+                st.info(get_recommendation(cluster))
             else: 
                 st.error("ID dan Total Belanja harus diisi") 
     with tab4:
